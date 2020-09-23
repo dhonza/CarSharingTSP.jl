@@ -8,7 +8,6 @@ using DataStructures: OrderedDict
 using Dates
 using FileIO
 using Flux
-using Flux: back!, mse, binarycrossentropy, logitbinarycrossentropy, crossentropy
 # using JLD2
 # using JLSO
 using JSON
@@ -55,7 +54,7 @@ function import_dataset(fname, split::AbstractFloat = 0.8)
     @info "#true: $(sum(rawdata[][!, :feasible])), #false: $(nobs(rawdata[]) - sum(rawdata[][!, :feasible]))"
     dtrans = tonumerical(rawdata, :, :T => Dict(:standardize => false))
     @info "transforming"
-    data = transform(rawdata, dtrans, Matrix{Float32})
+    data = MLGoodies.transform(rawdata, dtrans, Matrix{Float32})
     @info "storing the transform to JSON"
     open(f->JSON.print(f, dtrans, 3), "$(fname).transform.json", "w")
     data, dtrans
@@ -66,12 +65,14 @@ function train(Xtrn, Ttrn, Xtst, Ttst;
     epochs = 500,
     early_stop = 20,
     hidden = [1024, 512, 256],
+    logepochs=1
     )
     mkpath(model_dir)
     
     Random.seed!()
     model = MLP(size(Xtrn, 1), hidden..., 1; outactivation=identity) |> gpu
 
+    ps = params(model)
     lossforoutput(Y, T) = batchlogitbinarycrossentropy(Y, T) 
     loss(X, T) = lossforoutput(model(getobs(X)), getobs(T))
     
@@ -84,7 +85,7 @@ function train(Xtrn, Ttrn, Xtst, Ttst;
     function evaluatebatch(X, T, batchsize=4096; gpuloss=true)
         Y = similar(T)
         for idxs in partition(1:size(X, 2), batchsize)
-            Y[:,idxs] .= model(X[:,idxs]).data
+            Y[:,idxs] .= model(X[:,idxs])
         end
         loss_ = lossforoutput(Y, T)
         Ycls = prob2class(round.(σ.(Y)))
@@ -96,34 +97,10 @@ function train(Xtrn, Ttrn, Xtst, Ttst;
         loss_, acc_, cm_
     end
     
-    function evalepoch(;epoch, epoch_start_time, ps, kwargs...)
-        if epoch % 1 == 0
-            ste = time()
-            test_loss, test_acc, _ = evaluatebatch(Xtst, Ttst)
-            este = time() - ste
-
-            improvestr = ""
-            if test_loss < best_loss
-                best_loss, best_epoch = test_loss, epoch
-                cpumodel = model |> cpu
-                BSON.@save joinpath(model_dir, "model.bson") cpumodel
-                improvestr = "*"
-            end
-            etime = time() - epoch_start_time
-            ttime = time() - total_start_time
-
-            @info @sprintf "E%d/%d: test: %0.5f/%0.2f%% in %0.3fs (eval %0.3fs, total %0.3fs) %s\n" epoch epochs test_loss test_acc etime este ttime improvestr
-
-            if epoch >= best_epoch + early_stop
-                @info "early stopping in epoch $epoch\n"
-                throw(Flux.Optimise.StopException())
-            end 
-        end
-    end
-    
     opt = ADAM()
     # bsize = 4096
     bsize = 1024
+
     nbatches = nobs(Xtrn) ÷ bsize
     if nbatches == 0
         nbatches = 1
@@ -133,9 +110,44 @@ function train(Xtrn, Ttrn, Xtst, Ttst;
     ps = params(model)
     @info "#params: $(sum(length.(ps)))"
 
-    dataset = flatten(repeated(RandomBatches((Xtrn, Ttrn), bsize, nbatches), epochs))
-    @info "dataset ready: type = $(typeof(dataset))"
-    trainepochs!(loss, params(model), dataset, nbatches, opt, epochcb = evalepoch)
+    test_loss, test_acc, test_cm = evaluatebatch(Xtst, Ttst)
+    @info @sprintf "initial: test: %0.7f (%0.2f%%)\n" test_loss test_acc
+
+    # dataset = flatten(repeated(RandomBatches((Xtrn, Ttrn), bsize, nbatches), epochs))
+    # dataset = RandomBatches((Xtrn, Ttrn), bsize, epochs*nbatches)
+    dataset = RandomBatches((Xtrn, Ttrn), bsize, nbatches)
+    # @info "dataset ready: type = $(typeof(dataset))"
+
+    for epoch in 1:epochs
+        epoch_start_time = time()
+
+        Flux.train!(loss, ps, dataset, opt; cb = () -> ())
+        
+        ste = time()
+        train_loss, train_acc, train_cm = evaluatebatch(Xtrn, Ttrn)
+        test_loss, test_acc, test_cm = evaluatebatch(Xtst, Ttst)
+        este = time() - ste
+
+        if test_loss < best_loss
+            best_loss, best_epoch = test_loss, epoch
+            cpumodel = model |> cpu
+            BSON.@save joinpath(model_dir, "model.bson") cpumodel
+            improvestr = "*"
+        else
+            improvestr = "-$(epoch-best_epoch)"
+        end
+        etime = time() - epoch_start_time
+        ttime = time() - total_start_time
+        
+        if epoch % logepochs == 0
+            @info @sprintf "E%d/%d: train: %0.7f (%0.2f%%) test: %0.7f (%0.2f%%) in %0.3fs (eval %0.3fs, total %0.3fs) %s\n" epoch epochs train_loss train_acc test_loss test_acc etime este ttime improvestr
+        end
+        if epoch >= best_epoch + early_stop
+            @info "early stopping in epoch $epoch\n"
+            break
+        end     
+    end
+
     BSON.@load joinpath(model_dir, "model.bson") cpumodel
     model = cpumodel |> gpu
 
@@ -148,25 +160,6 @@ function train(Xtrn, Ttrn, Xtst, Ttst;
     @info "test confusion matrix:\n$(test_cm)"
 
     model
-end
-
-function set_logger(dir)
-    mkpath(dir)
-
-    not_libs(log) = ! (startswith(string(log._module), "CUDA") || startswith(string(log._module), "TranscodingStreams"))
-
-    old_logger = global_logger()
-    tee_logger = TeeLogger(
-        old_logger,
-        EarlyFilteredLogger(not_libs, FlushedLogger(joinpath(dir, "log.txt"))),
-        FlushedLogger(joinpath(dir, "log.txt"), Info, showmodule=false, showfile=:short)
-    )
-    global_logger(tee_logger)
-
-    @info "host name: $(gethostname())"
-    @info "SLURM_JOB_ID: $(get(ENV, "SLURM_JOB_ID", "N/A"))"
-    @info "SLURM_JOB_NAME: $(get(ENV, "SLURM_JOB_NAME", "N/A"))"
-    @info "SLURM_SUBMIT_HOST: $(get(ENV, "SLURM_SUBMIT_HOST", "N/A"))"
 end
 
 function main()
@@ -185,12 +178,15 @@ function main()
     # data_dir = "full/5/group_data_size"
     # data_dir = "full/6/group_data_size"
     # data_dir = "full/7/group_data_size"
-    # data_dir = "full/8/group_data_size"
+    data_dir = "full/8/group_data_size"
     # data_dir = "full/9/group_data_size"
-    data_dir = "full/10/group_data_size"
+    # data_dir = "full/10/group_data_size"
 
     model_dir = "exp/$(data_dir)/$(join(hidden, "_"))"
-    set_logger(model_dir)
+    ispath(model_dir) && error("path $model_dir exists!")
+    mkpath(model_dir)
+
+    append_default_flushed_logger(joinpath(model_dir, "log.txt"))
 
     @info "importing dataset: $(data_dir)"
     data, dtrans = import_dataset("data/$(data_dir)", 0.98)
