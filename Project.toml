@@ -1,0 +1,18 @@
+name = "CarSharingTSP"
+uuid = "55fa0d49-d7b1-4c6e-81a3-af5b636d9737"
+authors = ["drchajan "]
+version = "0.1.0"
+
+[deps]
+BSON = "fbb218c0-5317-5bc6-957e-2ee96dd4b1f0"
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
+FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
+Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
+FluxGoodies = "dcc44ff8-9cc2-11e9-192c-9d0d02188c41"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+LogGoodies = "754ae00c-ff84-491f-819f-e681a1ca7e4f"
+MLDataPattern = "9920b226-0b2a-5f5f-9153-9aa70a013f8b"
+MLDataUtils = "cc2ba9b6-d476-5e6d-8eaf-a92d5412d41d"
+MLGoodies = "16195346-62c9-4c49-aad8-e0f68c763a84"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"

@@ -1,0 +1,13 @@
+#!/bin/bash
+#SBATCH --time=08:00:00
+#SBATCH --nodes=1 --ntasks-per-node=1 --cpus-per-task=4
+#SBATCH --partition=gpu --gres=gpu:1
+#SBATCH --mem=64G
+#SBATCH --error=logs/tsp_cpu.%j.err
+#SBATCH --out=logs/tsp_cpu.%j.out
+
+module load fosscuda/2019a
+module load cuDNN
+module load Julia/1.1.0-foss-2018b
+
+julia -O3 --check-bounds=no carsharing-tsp.jl
