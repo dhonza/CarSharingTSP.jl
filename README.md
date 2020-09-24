@@ -29,4 +29,6 @@ sbatch train_gpu.batch
 ```
 The trained models as well as train logs are stored in the `./exp` directory. RCI logs reside in `./logs`. 
 
-## **TODO** add info on notebooks and conversion to Python
+## Converting the trained models to Python
+
+The MultiLayer Perceptron trained in Julia can be converted to Python. See Jupyter notebooks: `1.0-hd-export_model_parameters.ipynb` and `2.0-hd-import_python.ipynb`.
